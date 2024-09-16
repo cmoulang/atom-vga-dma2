@@ -1,0 +1,101 @@
+/*
+ * PIO state machine programs for handling operations on the 6502 bus.
+ */
+
+// 6502 bus signals
+.define public PIN_A0 2         ; also A8 or D0 depending on mux settings
+.define public PIN_1MHZ 18
+.define public PIN_R_NW 19
+
+// mux control pins
+.define public PIN_MUX_ADD_LOW 28
+.define public PIN_MUX_ADD_HIGH 27
+.define public PIN_MUX_DATA 26
+
+// mux bit masks
+.define ADDRESS_LOW 0b011
+.define ADDRESS_HIGH 0b101
+.define DATA 0b110
+
+.define IRQ_NUM 4
+
+; Controls the mux during the address reading phase of the 6502 clock cycle.
+; Notifies other SMs when the address is available.
+; Pushes DMA addresses for 6502 write oprations.
+.program mux
+.side_set 3 opt
+    pull block
+    mov x osr                   ; x = buffer address
+    pull block                  ; osr = tADDR delay cycle count
+.wrap_target
+loop:
+    wait 1 gpio PIN_1MHZ 
+    wait 0 gpio PIN_1MHZ   [1]  ; wait for 1 -> 0
+    mov y osr side ADDRESS_LOW  ; init counter and reset the mux
+ d: jmp y-- d                   ; delay for address lines to settle
+
+    irq clear IRQ_NUM           ; notify other state machine(s)
+
+    in pins 8 [1] side ADDRESS_HIGH ; read A0-A7 and select A8-A15 on the mux
+    nop [1]
+    in pins 8                   ; read A8-A15
+    in x 16                     ; add the buffer base address
+    jmp pin loop                ; ignore reads
+    push                        ; push to rx fifo
+.wrap    
+
+% c-sdk {
+
+// Setup the SM pins and ISR behaviour. 
+void mux_init(PIO pio, uint sm, uint offset) {
+    pio->input_sync_bypass = (0xFF << PIN_A0) | (1 << PIN_R_NW);
+
+    pio_gpio_init(pio, PIN_MUX_DATA);
+    pio_gpio_init(pio, PIN_MUX_ADD_LOW);
+    pio_gpio_init(pio, PIN_MUX_ADD_HIGH);
+
+    pio_sm_set_pins_with_mask (pio, sm, 0b111 << PIN_MUX_DATA, 0b111 << PIN_MUX_DATA);
+    pio_sm_set_consecutive_pindirs (pio, sm, PIN_MUX_DATA, 3, true);
+
+    pio_sm_config c = mux_program_get_default_config(offset);
+    sm_config_set_jmp_pin 	(&c, PIN_R_NW);
+    sm_config_set_in_pins(&c, PIN_A0);
+    sm_config_set_set_pins(&c, PIN_MUX_DATA, 3);
+
+    sm_config_set_sideset(&c, 4, true, false);
+    sm_config_set_sideset_pins(&c, PIN_MUX_DATA);
+
+    sm_config_set_in_shift(&c, true, false, 32);
+    pio_sm_init(pio, sm, offset, &c);
+}
+
+%}
+
+
+; Handles the second half of the 6502 write clock cycle
+; Pushes data from the 6502 bus to the DMA
+.program write
+.wrap_target
+loop:
+    irq wait IRQ_NUM            ; wait for mux ready
+    jmp PIN loop [10]           ; ignore reads
+    set pins DATA               ; select D0-D7 on the mux
+    wait 1 gpio PIN_1MHZ 
+    wait 0 gpio PIN_1MHZ        ; wait for 1 -> 0
+    in pins 8                   ; read D0-D7
+.wrap
+
+% c-sdk {
+
+// Setup the SM pins and ISR behaviour. 
+void write_init(PIO pio, uint sm, uint offset) {
+    pio_sm_config c = write_program_get_default_config(offset);
+    sm_config_set_jmp_pin 	(&c, PIN_R_NW);
+    sm_config_set_in_pins(&c, PIN_A0);
+    sm_config_set_set_pins(&c, PIN_MUX_DATA, 3);
+
+    sm_config_set_in_shift(&c, false, true, 8);
+    pio_sm_init(pio, sm, offset, &c);
+}
+
+%}
