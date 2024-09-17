@@ -38,13 +38,13 @@ loop:
 
     irq clear IRQ_NUM           ; notify other state machine(s)
 
-    in pins 8 [1] side ADDRESS_HIGH ; read A0-A7 and select A8-A15 on the mux
-    jmp pin loop [1]               ; ignore reads
+    in pins 8 side ADDRESS_HIGH [1] ; read A0-A7 and select A8-A15 on the mux
+    jmp pin loop [1]            ; ignore reads
     in pins 8                   ; read A8-A15
     in x 16                     ; add the buffer base address
     wait 1 gpio PIN_1MHZ side DATA 
     wait 0 gpio PIN_1MHZ        ; wait for 1 -> 0
-    in pins 32 side ADDRESS_LOW  ; read D0-D7
+    in pins 32 side ADDRESS_LOW ; read D0-D7
 .wrap    
 
 % c-sdk {
